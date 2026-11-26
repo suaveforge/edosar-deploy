@@ -1,0 +1,55 @@
+name: Publish verified e-Dosar video
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-verified-video.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: edosar-publish-video
+  cancel-in-progress: false
+jobs:
+  video:
+    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover and publish existing verified recording without re-recording
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REPOSITORY" = suaveforge/edosar-deploy
+          D=/home/ggul-docker/bin/docker
+          S=unix:///home/ggul-docker/run/docker.sock
+          IMG=suaveforge-edosar:c4da6aad5dd07c7f5048f738ad6f64133ac624cb
+          ROOT=/home/edosar-evidence/runs/45620781264-1
+          mkdir -p video
+          "$D" -H "$S" run --rm --network none --user 0 -v "$ROOT:/evidence:ro" --entrypoint python "$IMG" -c 'import pathlib,json,hashlib,sys
+          p=pathlib.Path("/evidence")
+          v=json.loads((p/"verified.json").read_text())
+          f=p/"edosar-intake.mp4"
+          assert v["source"]=="c4da6aad5dd07c7f5048f738ad6f64133ac624cb" and v["pc"] and v["mobile"] and v["tenant_denial"]
+          assert hashlib.sha256(f.read_bytes()).hexdigest()==v["mp4_sha256"]
+          assert f.stat().st_size<95000000
+          sys.stdout.buffer.write(f.read_bytes())' > video/edosar-intake.mp4
+          test -s video/edosar-intake.mp4
+          "$D" -H "$S" run --rm --network none --user 0 -v "$ROOT:/evidence:ro" --entrypoint cat "$IMG" /evidence/verified.json > video/verified.json
+          sha256sum video/edosar-intake.mp4
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add video/edosar-intake.mp4 video/verified.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish hash-verified synthetic e-Dosar browser recording'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+          commit="$(git rev-parse HEAD)"
+          raw="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$commit/video/edosar-intake.mp4"
+          curl -fsSL --retry 4 --retry-delay 2 --max-time 60 "$raw" -o "$RUNNER_TEMP/edosar-video-$GITHUB_RUN_ID.mp4"
+          cmp video/edosar-intake.mp4 "$RUNNER_TEMP/edosar-video-$GITHUB_RUN_ID.mp4"
+          rm -f "$RUNNER_TEMP/edosar-video-$GITHUB_RUN_ID.mp4"
+          echo "EDOSAR_PUBLIC_VIDEO=$raw"
+          echo "EDOSAR_PUBLIC_VIDEO_VERIFIED=PASS"
